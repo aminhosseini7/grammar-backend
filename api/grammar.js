@@ -1,17 +1,21 @@
 // api/grammar.js
-// Serverless function on Vercel for grammar checking with DeepSeek
-// + CORS برای اتصال از GitHub Pages
+// Serverless function on Vercel for grammar checking
+// using Hugging Face Inference API + CORS for GitHub Pages
 
 const ALLOWED_ORIGIN = "https://aminhosseini7.github.io";
 
+// یک مدل متنی مناسب روی Hugging Face
+// می‌تونی بعداً عوضش کنی (مثلاً flan-t5-xl یا mistralai/Mistral-7B-Instruct-v0.2)
+const HF_MODEL_ID = "google/flan-t5-large";
+const HF_API_URL = `https://api-inference.huggingface.co/models/${HF_MODEL_ID}`;
+
 module.exports = async (req, res) => {
-  // هدرهای CORS
+  // CORS
   res.setHeader("Access-Control-Allow-Origin", ALLOWED_ORIGIN);
   res.setHeader("Vary", "Origin");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
-  // پاسخ به preflight
   if (req.method === "OPTIONS") {
     return res.status(200).end();
   }
@@ -27,9 +31,9 @@ module.exports = async (req, res) => {
     return res.status(400).json({ error: "Field 'text' is required" });
   }
 
-  const apiKey = process.env.DEEPSEEK_API_KEY;
-  if (!apiKey) {
-    return res.status(500).json({ error: "Server misconfigured: no API key" });
+  const apiToken = process.env.HF_API_TOKEN;
+  if (!apiToken) {
+    return res.status(500).json({ error: "Server misconfigured: no HF_API_TOKEN" });
   }
 
   const prompt = `
@@ -52,36 +56,54 @@ Learner text:
   `.trim();
 
   try {
-    const resp = await fetch("https://api.deepseek.com/v1/chat/completions", {
+    const resp = await fetch(HF_API_URL, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${apiKey}`,
+        Authorization: `Bearer ${apiToken}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: "deepseek-chat",
-        messages: [
-          { role: "system", content: "You are a helpful English grammar tutor." },
-          { role: "user", content: prompt },
-        ],
-        temperature: 0.4,
+        inputs: prompt,
+        parameters: {
+          max_new_tokens: 512,
+          temperature: 0.4,
+        },
       }),
     });
 
     if (!resp.ok) {
       const errText = await resp.text();
-      return res
-        .status(500)
-        .json({ error: "DeepSeek API error", status: resp.status, detail: errText });
+      return res.status(500).json({
+        error: "HuggingFace API error",
+        status: resp.status,
+        detail: errText,
+      });
     }
 
-    const data = await resp.json();
-    const content = data?.choices?.[0]?.message?.content?.trim() || "";
+    const hfData = await resp.json();
+
+    // ساختار معمول Inference API برای text-generation / text2text-generation:
+    // [ { "generated_text": "..." } ]
+    let generated = "";
+    if (Array.isArray(hfData) && hfData.length > 0) {
+      generated =
+        hfData[0].generated_text ||
+        hfData[0].summary_text ||
+        "";
+    } else if (typeof hfData === "object" && hfData !== null) {
+      generated =
+        hfData.generated_text ||
+        hfData.summary_text ||
+        "";
+    }
+
+    const content = (generated || "").trim();
 
     let parsed;
     try {
       parsed = JSON.parse(content);
     } catch (e) {
+      // اگر مدل JSON تمیز نداد، خود متن خام را برای دیباگ برمی‌گردانیم
       return res.status(500).json({
         error: "Model did not return valid JSON",
         raw: content,
@@ -91,7 +113,7 @@ Learner text:
     return res.status(200).json(parsed);
   } catch (e) {
     return res.status(500).json({
-      error: "Request to DeepSeek failed",
+      error: "Request to HuggingFace failed",
       detail: String(e),
     });
   }
