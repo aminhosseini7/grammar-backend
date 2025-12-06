@@ -1,0 +1,7 @@
+{
+  "name": "grammar-backend",
+  "version": "1.0.0",
+  "description": "Serverless grammar API using DeepSeek on Vercel",
+  "main": "index.js",
+  "license": "MIT"
+}
