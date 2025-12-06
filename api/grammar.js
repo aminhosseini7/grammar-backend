@@ -1,13 +1,13 @@
 // api/grammar.js
 // Serverless function on Vercel for grammar checking
-// using Hugging Face Inference API (router) + CORS for GitHub Pages
+// using Hugging Face Router (OpenAI-compatible) + CORS for GitHub Pages
 
 const ALLOWED_ORIGIN = "https://aminhosseini7.github.io";
 
-// مدل متنی که می‌خوایم استفاده کنیم
-const HF_MODEL_ID = "google/flan-t5-large";
-// آدرس Router هاگینگ‌فیس
-const HF_API_URL = `https://router.huggingface.co/models/${HF_MODEL_ID}`;
+// HF Router (OpenAI-style)
+const HF_API_URL = "https://router.huggingface.co/v1/chat/completions";
+// مدلی که روی HF Inference API در دسترس است
+const HF_MODEL_ID = "HuggingFaceTB/SmolLM3-3B:hf-inference";
 
 module.exports = async (req, res) => {
   // CORS
@@ -33,15 +33,18 @@ module.exports = async (req, res) => {
 
   const apiToken = process.env.HF_API_TOKEN;
   if (!apiToken) {
-    return res.status(500).json({ error: "Server misconfigured: no HF_API_TOKEN" });
+    return res
+      .status(500)
+      .json({ error: "Server misconfigured: no HF_API_TOKEN" });
   }
 
-  const prompt = `
+  // پرامپت سیستم: به مدل می‌گوید فقط JSON بدهد
+  const systemPrompt = `
 You are an English grammar tutor. The learner's CEFR level is ${level}.
 
-Analyze the following text, correct it if needed, and explain the errors.
+You must analyze the learner's text, correct it if needed, and explain the errors.
 
-You MUST return ONLY valid JSON with this exact schema and nothing else:
+You MUST reply with ONLY valid JSON (no backticks, no extra text) in EXACTLY this schema:
 
 {
   "corrected": "string",
@@ -50,10 +53,14 @@ You MUST return ONLY valid JSON with this exact schema and nothing else:
   "examples": ["example sentence 1", "example sentence 2"],
   "suggested_practice": "short Persian instruction for a practice task"
 }
+`.trim();
+
+  const userPrompt = `
+Learner level: ${level}
 
 Learner text:
-"""${text}""".
-  `.trim();
+"""${text}"""
+`.trim();
 
   try {
     const resp = await fetch(HF_API_URL, {
@@ -63,11 +70,12 @@ Learner text:
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        inputs: prompt,
-        parameters: {
-          max_new_tokens: 512,
-          temperature: 0.4,
-        },
+        model: HF_MODEL_ID,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userPrompt },
+        ],
+        temperature: 0.4,
       }),
     });
 
@@ -82,27 +90,24 @@ Learner text:
 
     const hfData = await resp.json();
 
-    // ساختار معمول پاسخ text-generation/text2text:
-    // [ { "generated_text": "..." } ]
-    let generated = "";
-    if (Array.isArray(hfData) && hfData.length > 0) {
-      generated =
-        hfData[0].generated_text ||
-        hfData[0].summary_text ||
-        "";
-    } else if (typeof hfData === "object" && hfData !== null) {
-      generated =
-        hfData.generated_text ||
-        hfData.summary_text ||
-        "";
-    }
+    // ساختار OpenAI-style:
+    // { choices: [ { message: { content: "..." } } ] }
+    let content =
+      hfData?.choices?.[0]?.message?.content &&
+      String(hfData.choices[0].message.content).trim();
 
-    const content = (generated || "").trim();
+    if (!content) {
+      return res.status(500).json({
+        error: "Empty response from model",
+        raw: hfData,
+      });
+    }
 
     let parsed;
     try {
       parsed = JSON.parse(content);
     } catch (e) {
+      // اگر مدل به‌جای JSON متن معمولی برگرداند، برای دیباگ خام را می‌فرستیم
       return res.status(500).json({
         error: "Model did not return valid JSON",
         raw: content,
