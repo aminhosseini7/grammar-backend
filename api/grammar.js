@@ -6,8 +6,8 @@ const ALLOWED_ORIGIN = "https://aminhosseini7.github.io";
 
 // مدل متنی که می‌خوایم استفاده کنیم
 const HF_MODEL_ID = "google/flan-t5-large";
-// آدرس جدید Router هاگینگ‌فیس
-const HF_API_URL = `https://router.huggingface.co/hf-inference/models/${HF_MODEL_ID}`;
+// آدرس Router هاگینگ‌فیس
+const HF_API_URL = `https://router.huggingface.co/models/${HF_MODEL_ID}`;
 
 module.exports = async (req, res) => {
   // CORS
@@ -63,8 +63,6 @@ Learner text:
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        // طبق مستندات Router:
-        // https://router.huggingface.co/hf-inference/models/{model_id}
         inputs: prompt,
         parameters: {
           max_new_tokens: 512,
@@ -84,7 +82,7 @@ Learner text:
 
     const hfData = await resp.json();
 
-    // ساختار معمول پاسخ text-generation/text2text از Inference:
+    // ساختار معمول پاسخ text-generation/text2text:
     // [ { "generated_text": "..." } ]
     let generated = "";
     if (Array.isArray(hfData) && hfData.length > 0) {
