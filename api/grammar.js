@@ -1,13 +1,13 @@
 // api/grammar.js
 // Serverless function on Vercel for grammar checking
-// using Hugging Face Inference API + CORS for GitHub Pages
+// using Hugging Face Inference API (router) + CORS for GitHub Pages
 
 const ALLOWED_ORIGIN = "https://aminhosseini7.github.io";
 
-// یک مدل متنی مناسب روی Hugging Face
-// می‌تونی بعداً عوضش کنی (مثلاً flan-t5-xl یا mistralai/Mistral-7B-Instruct-v0.2)
+// مدل متنی که می‌خوایم استفاده کنیم
 const HF_MODEL_ID = "google/flan-t5-large";
-const HF_API_URL = `https://api-inference.huggingface.co/models/${HF_MODEL_ID}`;
+// آدرس جدید Router هاگینگ‌فیس
+const HF_API_URL = `https://router.huggingface.co/hf-inference/models/${HF_MODEL_ID}`;
 
 module.exports = async (req, res) => {
   // CORS
@@ -63,6 +63,8 @@ Learner text:
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
+        // طبق مستندات Router:
+        // https://router.huggingface.co/hf-inference/models/{model_id}
         inputs: prompt,
         parameters: {
           max_new_tokens: 512,
@@ -82,7 +84,7 @@ Learner text:
 
     const hfData = await resp.json();
 
-    // ساختار معمول Inference API برای text-generation / text2text-generation:
+    // ساختار معمول پاسخ text-generation/text2text از Inference:
     // [ { "generated_text": "..." } ]
     let generated = "";
     if (Array.isArray(hfData) && hfData.length > 0) {
@@ -103,7 +105,6 @@ Learner text:
     try {
       parsed = JSON.parse(content);
     } catch (e) {
-      // اگر مدل JSON تمیز نداد، خود متن خام را برای دیباگ برمی‌گردانیم
       return res.status(500).json({
         error: "Model did not return valid JSON",
         raw: content,
