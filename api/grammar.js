@@ -105,16 +105,24 @@ Learner text:
 
     let parsed;
     try {
-      parsed = JSON.parse(content);
+      // بعضی مدل‌ها قبل از JSON یک بخش <think> ... </think> می‌نویسند.
+      // ما فقط بخش بین اولین { و آخرین } را برمی‌داریم.
+      const match = content.match(/\{[\s\S]*\}/);
+      if (!match) {
+        throw new Error("No JSON object found in content");
+      }
+      const jsonText = match[0];
+      parsed = JSON.parse(jsonText);
     } catch (e) {
-      // اگر مدل به‌جای JSON متن معمولی برگرداند، برای دیباگ خام را می‌فرستیم
       return res.status(500).json({
         error: "Model did not return valid JSON",
         raw: content,
+        detail: String(e),
       });
     }
 
     return res.status(200).json(parsed);
+    
   } catch (e) {
     return res.status(500).json({
       error: "Request to HuggingFace failed",
