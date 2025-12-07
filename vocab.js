@@ -1,70 +1,62 @@
 // api/vocab.js
-// سرور Vercel – تولید معنی و مثال برای یک کلمه با کمک HuggingFace
+// بک‌اند تولید معنی و مثال و نکته برای واژگان
 
 export default async function handler(req, res) {
-  // CORS برای GitHub Pages
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
-
-  if (req.method === "OPTIONS") {
-    return res.status(200).end();
-  }
-
+  // فقط POST
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
   }
 
-  try {
-    const { word } = req.body || {};
+  const { word } = req.body || {};
 
-    if (!word || typeof word !== "string" || !word.trim()) {
-      return res.status(400).json({ error: "Missing 'word' in body" });
-    }
+  if (!word || typeof word !== "string") {
+    return res.status(400).json({ error: "Missing 'word' in body" });
+  }
 
-    const apiKey =
-      process.env.HUGGINGFACE_API_KEY || process.env.HF_API_KEY || "";
+  const apiKey = process.env.HUGGINGFACE_API_KEY;
+  if (!apiKey) {
+    return res.status(500).json({
+      error: "Missing HUGGINGFACE_API_KEY",
+    });
+  }
 
-    if (!apiKey) {
-      return res
-        .status(500)
-        .json({ error: "Missing HuggingFace API key on server" });
-    }
+  const prompt = `
+You are an English–Persian vocabulary tutor.
 
-    const systemPrompt =
-      "You are an English–Persian vocabulary tutor. The user sends ONE English word.";
-
-    const userPrompt = `
-Word: "${word.trim()}"
-
-Return ONLY a JSON object with EXACTLY these keys:
+For the English word "${word}", produce a VALID JSON object (no markdown, no explanation, no code block) with EXACTLY this schema:
 
 {
-  "fa": "کوتاه‌ترین معنی فارسی، ۵ تا ۱۵ واژه – بدون توضیح اضافه",
-  "example": "یک جملهٔ بسیار ساده و طبیعی انگلیسی (سطح B1) با این لغت",
-  "usage": "یک جملهٔ فارسی که کاربرد این کلمه را توضیح می‌دهد",
-  "hint": "یک جملهٔ خیلی کوتاه و خودمانی فارسی برای حفظ کردن این لغت (مثل یک ترفند یا تصویر ذهنی)"
+  "meaning_fa": "یک معنی کوتاه و روان به فارسی",
+  "example_en": "یک جمله ساده سطح B1 با این کلمه",
+  "usage_fa": "توضیح کوتاه فارسی از کاربرد کلمه",
+  "note": "یک جمله‌ی خیلی کوتاه فارسی به عنوان راهنمای حفظ (mnemonic)"
 }
 
-قوانین:
-- فقط همین JSON را بده؛ هیچ متن دیگری قبل یا بعدش ننویس.
-- توی مقدارها از \n اضافه بی‌دلیل استفاده نکن.
-- اگر چند معنی ممکن است، رایج‌ترین معنی برای زبان‌آموز سطح B1 را انتخاب کن.
-`.trim();
+Rules:
+- meaning_fa and usage_fa and note MUST be in Persian.
+- example_en MUST be in English.
+- Output ONLY the JSON object. No extra text. No <think> tags.
+    `;
 
-    const hfResponse = await fetch(
+  try {
+    // درخواست به HuggingFace Router
+    const hfRes = await fetch(
       "https://router.huggingface.co/chat/completions",
       {
         method: "POST",
         headers: {
-          "Content-Type": "application/json",
           Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          model: "meta-llama/Llama-3.3-70B-Instruct", // اگر در grammar.js مدل دیگری گذاشتی، همان را بگذار
+          model: "meta-llama/Meta-Llama-3-8B-Instruct",
           messages: [
-            { role: "system", content: systemPrompt },
-            { role: "user", content: userPrompt },
+            {
+              role: "system",
+              content:
+                "You are a helpful assistant for English–Persian vocabulary learning.",
+            },
+            { role: "user", content: prompt },
           ],
           temperature: 0.4,
           max_tokens: 256,
@@ -72,47 +64,56 @@ Return ONLY a JSON object with EXACTLY these keys:
       }
     );
 
-    const hfData = await hfResponse.json();
+    const raw = await hfRes.json();
 
-    const content =
-      hfData?.choices?.[0]?.message?.content ||
-      hfData?.choices?.[0]?.message?.tool_calls?.[0]?.function?.arguments ||
+    let text =
+      raw?.choices?.[0]?.message?.content ||
+      raw?.choices?.[0]?.message ||
       "";
 
-    // اگر مدل مثل بعضی‌ها <think> و توضیح اضافه داد، فقط بخش JSON را جدا می‌کنیم
-    const firstBrace = content.indexOf("{");
-    const lastBrace = content.lastIndexOf("}");
-
-    if (firstBrace === -1 || lastBrace === -1) {
-      return res.status(500).json({
-        error: "Model did not return JSON",
-        raw: content,
+    // اگر مدل مهمل یا همراه <think> برگرداند:
+    const first = text.indexOf("{");
+    const last = text.lastIndexOf("}");
+    if (first === -1 || last === -1 || last <= first) {
+      console.error("Vocab API: no JSON in model output:", text);
+      return res.status(200).json({
+        ok: false,
+        error: "NO_JSON",
+        message: "مدل خروجی JSON قابل‌تحلیل نداد.",
       });
     }
 
-    const jsonText = content.slice(firstBrace, lastBrace + 1);
+    const jsonPart = text.slice(first, last + 1);
 
     let parsed;
     try {
-      parsed = JSON.parse(jsonText);
+      parsed = JSON.parse(jsonPart);
     } catch (e) {
-      return res.status(500).json({
-        error: "Model did not return valid JSON",
-        raw: content,
+      console.error("Vocab API JSON parse error:", e, jsonPart);
+      return res.status(200).json({
+        ok: false,
+        error: "BAD_JSON",
+        message: "مدل JSON معتبر تولید نکرد.",
       });
     }
 
-    // کمی نرمال‌سازی برای اینکه همیشه این چهار فیلد را داشته باشیم
-    const result = {
-      fa: parsed.fa || "",
-      example: parsed.example || "",
-      usage: parsed.usage || "",
-      hint: parsed.hint || "",
+    const payload = {
+      ok: true,
+      word,
+      meaning_fa: parsed.meaning_fa || "",
+      example_en: parsed.example_en || "",
+      usage_fa: parsed.usage_fa || "",
+      note: parsed.note || "",
     };
 
-    return res.status(200).json(result);
-  } catch (e) {
-    console.error("Error in /api/vocab:", e);
-    return res.status(500).json({ error: "Internal server error" });
+    return res.status(200).json(payload);
+  } catch (err) {
+    console.error("Error in /api/vocab:", err);
+    // اینجا دیگه ۵۰۰ خام به کاربر نمی‌دیم
+    return res.status(200).json({
+      ok: false,
+      error: "SERVER_ERROR",
+      message: "خطای داخلی سرور در /api/vocab.",
+    });
   }
 }
