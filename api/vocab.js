@@ -1,15 +1,16 @@
 // api/vocab.js
-// Serverless function on Vercel for VOCAB explanations
-// از همان تنظیمات HuggingFace که در grammar.js استفاده می‌کنی
+// توليد معنی، مثال، کاربرد و نکته برای يک لغت
+// با HuggingFace Router (OpenAI-style) + CORS برای GitHub Pages
 
 const ALLOWED_ORIGIN = "https://aminhosseini7.github.io";
 
-// همون URL و مدل grammar.js
+// HF Router – OpenAI-compatible endpoint
 const HF_API_URL = "https://router.huggingface.co/v1/chat/completions";
+// مدلی که روی HF در دسترس است
 const HF_MODEL_ID = "HuggingFaceTB/SmolLM3-3B:hf-inference";
 
 module.exports = async (req, res) => {
-  // ----- CORS -----
+  // ---------- CORS ----------
   res.setHeader("Access-Control-Allow-Origin", ALLOWED_ORIGIN);
   res.setHeader("Vary", "Origin");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
@@ -24,11 +25,10 @@ module.exports = async (req, res) => {
     return res.status(405).json({ error: "Method not allowed" });
   }
 
+  // ---------- ورودی ----------
   const { word } = req.body || {};
-  const trimmed = (word || "").trim();
-
-  if (!trimmed) {
-    return res.status(400).json({ error: "Field 'word' is required" });
+  if (!word || typeof word !== "string") {
+    return res.status(400).json({ error: "Field 'word' (string) is required" });
   }
 
   const apiToken = process.env.HF_API_TOKEN;
@@ -38,29 +38,33 @@ module.exports = async (req, res) => {
       .json({ error: "Server misconfigured: no HF_API_TOKEN" });
   }
 
-  // ----- Prompt -----
+  // ---------- پرامپت سیستم ----------
   const systemPrompt = `
-You are an English–Persian vocabulary tutor.
+You are an English vocabulary tutor for Persian learners.
 
-You receive ONE English word and you must return a JSON object with these fields:
+For a given English word, you MUST respond ONLY with a single valid JSON object.
+No backticks, no extra text. EXACT SCHEMA:
 
 {
-  "meaning_fa": "short Persian meaning of the word",
-  "example_en": "a simple English sentence using the word",
-  "usage_fa": "a short Persian explanation of how the word is used in context",
-  "note": "a short, friendly mnemonic in Persian to help remember the word"
+  "meaning_fa": "short Persian meaning of the word (1–2 phrases)",
+  "example_en": "one simple English example sentence using the word",
+  "usage_fa": "1–2 short Persian sentences about how and when this word is used",
+  "note": "a very short fun mnemonic or memory tip in Persian (optional but recommended)"
 }
 
-Rules:
-- Answer ONLY valid JSON, no backticks, no markdown, no extra text.
-- Use simple, clear Persian so an upper-intermediate learner can understand.
-`.trim();
+All Persian text must be in Persian (Farsi), UTF-8.
+Use clear, simple, formal–friendly language suitable for an adult learner.
+If the word is a phrase (like 'status quo', 'bear on', 'set up'), explain and give an example for that phrase.
+  `.trim();
 
   const userPrompt = `
-Word: "${trimmed}"
-`.trim();
+Word: "${word}"
+
+Please fill ALL fields in the JSON.
+  `.trim();
 
   try {
+    // ---------- درخواست به HuggingFace ----------
     const resp = await fetch(HF_API_URL, {
       method: "POST",
       headers: {
@@ -88,7 +92,6 @@ Word: "${trimmed}"
 
     const hfData = await resp.json();
 
-    // ساختار OpenAI-style
     let content =
       hfData?.choices?.[0]?.message?.content &&
       String(hfData.choices[0].message.content).trim();
@@ -100,9 +103,10 @@ Word: "${trimmed}"
       });
     }
 
-    // فقط بخش JSON را نگه می‌داریم
+    // ---------- استخراج JSON از خروجی مدل ----------
     let parsed;
     try {
+      // در صورت وجود <think>...</think> فقط آبجکت JSON را جدا می‌کنیم
       const match = content.match(/\{[\s\S]*\}/);
       if (!match) {
         throw new Error("No JSON object found in content");
@@ -117,7 +121,32 @@ Word: "${trimmed}"
       });
     }
 
-    return res.status(200).json(parsed);
+    // ---------- نرمال‌سازی خروجی ----------
+    const result = {
+      word,
+      meaning_fa:
+        (parsed.meaning_fa || parsed.fa_meaning || parsed.meaning || "").trim(),
+      example_en:
+        (parsed.example_en || parsed.example || parsed.exampleEn || "").trim(),
+      usage_fa:
+        (parsed.usage_fa || parsed.usage || parsed.fa_usage || "").trim(),
+      note: (parsed.note || parsed.memory_tip || "").trim(),
+    };
+
+    // اگر همه‌چیز خالی بود، حداقل یک پیام خطا بدهیم
+    if (
+      !result.meaning_fa &&
+      !result.example_en &&
+      !result.usage_fa &&
+      !result.note
+    ) {
+      return res.status(500).json({
+        error: "Model returned empty fields",
+        raw: parsed,
+      });
+    }
+
+    return res.status(200).json(result);
   } catch (e) {
     return res.status(500).json({
       error: "Request to HuggingFace failed",
