@@ -1,112 +1,103 @@
-// api/vocab.js  (در ریپوی grammar-backend)
+// api/vocab.js  (روی Vercel)
 
-// این endpoint فقط با POST کار می‌کند و
-// از HuggingFace (router) برای ساخت معنی/مثال و ... استفاده می‌کند.
+// ✅ حواشی CORS برای GitHub Pages
+function setCors(res, req) {
+  const origin = req.headers.origin || "*";
+  res.setHeader("Access-Control-Allow-Origin", origin);
+  res.setHeader("Vary", "Origin");
+  res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+}
 
-const HF_API_KEY = process.env.HF_API_KEY;
-const HF_MODEL = "meta-llama/Meta-Llama-3-8B-Instruct";
-const HF_URL = "https://router.huggingface.co/inference/v1/chat/completions";
+module.exports = async (req, res) => {
+  setCors(res, req);
 
-export default async function handler(req, res) {
-  // فقط POST مجاز است
+  // ✅ پاسخ به preflight (OPTIONS) تا خطای CORS نگیریم
+  if (req.method === "OPTIONS") {
+    res.status(200).end();
+    return;
+  }
+
   if (req.method !== "POST") {
-    return res.status(405).json({ error: "Method not allowed" });
+    res.status(405).json({ error: "Method not allowed" });
+    return;
   }
-
-  // چک کردن توکن
-  if (!HF_API_KEY) {
-    return res.status(500).json({
-      error: "HuggingFace API key missing on server",
-    });
-  }
-
-  let word = "";
-  try {
-    word = (req.body && req.body.word) || "";
-  } catch (e) {
-    return res.status(400).json({ error: "Invalid JSON body" });
-  }
-
-  if (typeof word !== "string" || !word.trim()) {
-    return res.status(400).json({ error: "Missing 'word' in body" });
-  }
-  word = word.trim();
 
   try {
-    // پرامپت: خروجی باید حتما JSON باشد
-    const systemPrompt = `
-You are an English–Persian vocabulary assistant.
-Given a single English word, you MUST return a compact JSON object with the following fields:
+    const { word } = req.body || {};
+    if (!word || typeof word !== "string") {
+      res.status(400).json({ error: "Missing 'word' in body" });
+      return;
+    }
 
-- meaning_fa : a short Persian meaning (no extra commentary)
-- example_en : one natural English sentence using the word
-- usage_fa   : a short Persian explanation of how/when this word is used
-- note       : a very short Persian mnemonic or hint to remember the word
+    const HF_API_KEY = process.env.HF_API_KEY;
+    if (!HF_API_KEY) {
+      res.status(500).json({ error: "Missing HuggingFace API key" });
+      return;
+    }
 
-Return ONLY valid JSON, no Markdown, no explanation, no backticks.
-`.trim();
-
-    const userPrompt = `Word: "${word}"`;
-
-    const hfRes = await fetch(HF_URL, {
+    // ⚠️ اگر قبلاً از مدل/آدرس دیگری استفاده می‌کردی، فقط این بخش را
+    // با تنظیمات قبلی خودت هماهنگ کن؛ CORS مهمش بالاست.
+    const response = await fetch("https://router.huggingface.co/chat/completions", {
       method: "POST",
       headers: {
         "Authorization": `Bearer ${HF_API_KEY}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: HF_MODEL,
+        model: "meta-llama/Meta-Llama-3.1-8B-Instruct",
         messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: userPrompt },
+          {
+            role: "system",
+            content:
+              "You are an English vocabulary tutor. For the given word, respond ONLY with valid JSON of the form: " +
+              "{ \"meaning_fa\": \"…\", \"example_en\": \"…\", \"usage_fa\": \"…\", \"note\": \"…\" } . " +
+              "Do not add any extra text.",
+          },
+          {
+            role: "user",
+            content: `Generate Persian meaning, English example sentence, Persian usage explanation, and a short funny memory hint for the word: "${word}".`,
+          },
         ],
-        max_tokens: 256,
+        temperature: 0.4,
       }),
     });
 
-    if (!hfRes.ok) {
-      const txt = await hfRes.text().catch(() => "");
-      return res.status(502).json({
-        error: "HuggingFace API error",
-        status: hfRes.status,
-        detail: txt.slice(0, 500),
-      });
+    if (!response.ok) {
+      const txt = await response.text().catch(() => "");
+      res
+        .status(500)
+        .json({ error: "HuggingFace API error", status: response.status, detail: txt });
+      return;
     }
 
-    const completion = await hfRes.json();
+    const data = await response.json();
     const content =
-      completion?.choices?.[0]?.message?.content || "";
-
-    let jsonPart = content;
-
-    // اگر مدل قبل و بعد JSON متن اضافی گذاشت، فقط بخش بین { } را نگه می‌داریم
-    const start = content.indexOf("{");
-    const end = content.lastIndexOf("}");
-    if (start !== -1 && end !== -1 && end > start) {
-      jsonPart = content.slice(start, end + 1);
-    }
+      data.choices?.[0]?.message?.content ?? "";
 
     let parsed;
     try {
-      parsed = JSON.parse(jsonPart);
+      parsed = JSON.parse(content);
     } catch (e) {
-      // اینجا دیگه SyntaxError را می‌گیریم و 500 نمی‌دهیم
-      return res.status(200).json({
+      res.status(500).json({
         error: "Model did not return valid JSON",
         raw: content,
       });
+      return;
     }
 
-    // در نهایت جواب استاندارد
-    return res.status(200).json({
+    res.status(200).json({
       word,
-      ...parsed,
+      meaning_fa: parsed.meaning_fa || "",
+      example_en: parsed.example_en || "",
+      usage_fa: parsed.usage_fa || "",
+      note: parsed.note || "",
     });
-  } catch (e) {
-    console.error("Vocab API error:", e);
-    return res.status(500).json({
-      error: "Internal Vocab API error",
-      detail: String(e),
+  } catch (err) {
+    console.error("Error in /api/vocab:", err);
+    res.status(500).json({
+      error: "Internal server error",
+      detail: String(err),
     });
   }
-}
+};
